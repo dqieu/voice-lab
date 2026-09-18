@@ -1,0 +1,45 @@
+[project]
+name = "voice-lab"
+version = "0.1.0"
+description = "Local deterministic voice analysis, six-stream reconstruction, and a macOS web app"
+readme = "README.md"
+requires-python = ">=3.11,<3.15"
+dependencies = [
+    "numpy==2.4.4",
+    "scipy==1.17.1",
+    "soundfile==0.13.1",
+    "librosa==0.11.0",
+    "pysptk==1.0.1",
+    "numba==0.65.1",
+    "llvmlite==0.47.0",
+    "setuptools==80.10.2", # pysptk imports pkg_resources
+]
+
+[project.optional-dependencies]
+mac = ["pywebview==6.2.1; sys_platform == 'darwin'"]
+dev = ["pytest>=8,<10", "build>=1,<2"]
+
+[project.scripts]
+voice-lab = "voice_lab.player:main"
+voice-lab-mac = "voice_lab.desktop:main"
+
+[project.urls]
+Repository = "https://github.com/dqieu/voice-lab"
+Issues = "https://github.com/dqieu/voice-lab/issues"
+
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_lab"]
+
+[tool.hatch.build.targets.sdist]
+include = ["/src", "/tests", "/docs", "/packaging/macos", "/README.md", "/CONTRIBUTING.md", "/CHANGELOG.md", "/AGENTS.md", "/pyproject.toml", "/uv.lock"]
+exclude = ["/packaging/macos/build", "/packaging/macos/dist", "/packaging/macos/.venv-build"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.uv]
+package = true

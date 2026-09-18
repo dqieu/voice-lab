@@ -1,0 +1,19 @@
+Voice Lab for macOS
+
+1. Drag Voice Lab.app to Applications.
+2. Open Voice Lab from Applications.
+3. Choose Add dataset, then browse to a folder or CSV file.
+   Enable Include subfolders for a recursive folder scan.
+
+CSV files must contain a path column. Absolute paths and paths relative to
+the CSV's folder are supported. Extra columns are allowed.
+
+No Python installation or terminal commands are needed. Analysis is offline.
+Audio is read in place; imported datasets are remembered between launches.
+Exports and app logs live in ~/Library/Application Support/Voice Lab.
+
+This local development build is ad-hoc signed, not Apple-notarized. Public
+distribution should use a Developer ID signed and notarized release.
+
+The installer is built for the Mac architecture shown in its filename.
+Requires macOS 14 or later. Keep source folders in place after importing.

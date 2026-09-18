@@ -1,0 +1,12 @@
+# Standalone app only; intentionally independent of CUDA/training dependencies.
+numpy==2.4.4
+scipy==1.17.1
+soundfile==0.13.1
+librosa==0.11.0
+pysptk==1.0.1
+numba==0.65.1
+llvmlite==0.47.0
+setuptools==80.10.2
+pywebview>=6,<7
+pyinstaller>=6.16,<7
+imageio-ffmpeg>=0.6,<0.7

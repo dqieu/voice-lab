@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Voice segmentation lab</title>
+  <meta name="description" content="Analyze local voice recordings and compare six-stream reconstruction outputs without trained models.">
+  <link rel="stylesheet" href="./style.css"><script src="./app.js" defer></script>
+</head>
+<body>
+<header><div class="wordmark"><span class="mark" aria-hidden="true">∿</span> Voice segmentation <span class="lab">LAB</span></div><span class="local">Local audio · No trained models</span></header>
+<main>
+  <aside>
+    <div class="section-label">01 / SAMPLE</div>
+    <h1>Listen across datasets.</h1>
+    <form id="sample-form">
+      <label for="dataset">Dataset</label><select id="dataset" name="dataset" required><option>Loading local recordings…</option></select>
+      <p id="dataset-description" class="muted"></p>
+      <button type="button" id="add-dataset" class="secondary">+ Add dataset</button>
+      <p id="dataset-result" class="muted" role="status" aria-live="polite" hidden></p>
+      <div class="pair"><div><label for="seconds">Excerpt (seconds)</label><input id="seconds" type="number" min="1" max="45" value="20" required></div><div><label for="seed">Sample seed</label><input id="seed" type="number" value="42" required></div></div>
+      <label for="stress">Listening condition</label><select id="stress"><option value="clean">Original recording</option><option value="noise20">White noise · 20 dB SNR</option><option value="noise10">White noise · 10 dB SNR</option><option value="noise0">White noise · 0 dB SNR</option><option value="reverb">Synthetic room · 0.45 s T60</option><option value="hum">Tonal interference · 100 Hz</option></select>
+      <label for="noise-reduction">Noise reduction</label><select id="noise-reduction"><option value="off">Off</option><option value="wiener">Conservative Wiener</option><option value="subtraction">Conservative spectral subtraction</option></select>
+      <div class="action-pair"><button type="submit" id="sample" class="primary">Sample & analyze <span aria-hidden="true">↗</span></button><button type="button" id="shuffle" aria-label="Choose a new random sample" title="Choose a new random sample">↻</button></div>
+      <details><summary>Advanced settings</summary>
+        <label for="sensitivity">Sensitivity <output id="sensitivity-value">50%</output></label><input id="sensitivity" type="range" min="0" max="1" step="0.05" value="0.5">
+        <div class="pair"><div><label for="f0-min">Pitch floor (Hz)</label><input id="f0-min" type="number" min="30" max="999" value="60" required></div><div><label for="f0-max">Pitch ceiling (Hz)</label><input id="f0-max" type="number" min="31" max="1000" value="500" required></div></div>
+        <label for="channel">Recording profile</label><select id="channel"><option value="broadband">Broadband / studio</option><option value="telephone">Telephone · upper bandwidth 3.4 kHz</option></select>
+        <label for="formant-ceiling">Formant ceiling (Hz)</label><input id="formant-ceiling" type="number" min="2000" max="7600" step="100" value="5500" required>
+        <p class="muted">Change settings, then analyze the same seed to compare. Noise reduction uses detected nonspeech.</p>
+      </details>
+    </form>
+    <div class="method"><div class="section-label">METHOD</div><p>Voice measurements → six aligned streams → reconstructed audio.</p><p class="muted">Pitch, formants, landmarks, pulse quality and IAIF remain available for inspection. Missing measurements reflect rejected evidence.</p></div>
+  </aside>
+  <section class="workspace" aria-label="Audio analysis">
+    <div class="workspace-top"><div><div class="section-label">02 / INSPECT</div><h2 id="recording-title">Your first recording</h2><p id="provenance" class="muted">Choose a dataset and sample a recording.</p></div><div id="status" role="status" aria-live="polite">Ready</div></div>
+    <div id="error" role="alert" hidden></div>
+    <p class="muted">Voice analysis + six-stream reconstruction</p>
+    <div class="metrics"><div><span>Speech detected</span><strong id="speech-stat">—</strong></div><div><span>Speech intervals</span><strong id="segment-stat">—</strong></div><div><span>Median pitch</span><strong id="pitch-stat">—</strong></div><div><span>Voiced / speech</span><strong id="voiced-stat">—</strong></div></div>
+    <p id="evaluation-note" class="muted"></p>
+    <div class="signal-panel">
+      <div class="panel-heading"><h3>Waveform & activity</h3><div class="legend"><span class="voiced">Voiced</span><span class="unvoiced">Unvoiced speech</span><span class="silence">Nonspeech</span></div></div>
+      <canvas id="waveform" height="180" aria-label="Original waveform with detected voiced and unvoiced regions. Click to seek, or use the audio player's controls."></canvas>
+      <div class="time-labels"><span>0:00</span><span id="duration-label">—</span></div>
+      <audio id="audio" controls preload="metadata"></audio>
+      <p id="track-note" class="muted">Original recording, resampled to 16 kHz mono.</p>
+    </div>
+    <section id="output-panel" class="signal-panel" hidden aria-labelledby="output-heading">
+      <div class="panel-heading"><h3 id="output-heading">Playback output</h3><span class="muted">Choose a row, then press Play</span></div>
+      <div class="table-scroll"><table id="outputs"><caption class="sr-only">Available playback outputs. Reconstruction errors are measured against the minimal branch.</caption><thead><tr><th scope="col">Output</th><th scope="col">RMS error to minimal</th><th scope="col">Peak level</th></tr></thead><tbody></tbody></table></div>
+    </section>
+    <details id="full-features" hidden><summary>Advanced analysis · measurements, streams & source diagnostics</summary>
+      <div class="analysis-grid">
+      <div class="signal-panel"><div class="panel-heading"><h3>Pitch contour</h3><span class="muted">Hz · voiced frames</span></div><canvas id="pitch" height="160" aria-label="Estimated pitch in voiced frames"></canvas><label class="checkbox"><input id="pitch-candidates" type="checkbox"> Show ACF / YIN / SWIPE / cepstrum candidates</label></div>
+      <div class="signal-panel"><div class="panel-heading"><h3 id="formant-title">Tracked formants</h3><span class="muted">F1 / F2 / F3 · Hz</span></div><canvas id="formants" height="160" aria-label="Estimated formants with confidence-gated temporal tracking"></canvas></div>
+      </div>
+      <div class="signal-panel"><h3>Six-stream representation</h3>
+        <p id="packet-note" class="muted"></p>
+        <p class="muted">Harmonics and residual are complementary excitation components, each played through the tract. Full packet uses both. Parametric replaces the detailed residual with band-shaped noise. VAD annotates the packet; all audio intervals are retained.</p>
+        <div id="stream-list" class="event-list"></div>
+          <div class="analysis-grid"><div><h3>Tract · LSF frequencies</h3><canvas id="packet-tract" height="160" aria-label="Ordered line spectral frequencies in hertz"></canvas><p class="muted">LSFs encode a synthesis envelope; F1–F3 above describe measured formant peaks.</p></div><div><h3>Amplitude · excitation gain</h3><canvas id="packet-gain" height="160" aria-label="Excitation gain in digital decibels"></canvas><p class="muted">Gain scales excitation before tract synthesis; intensity below measures waveform loudness.</p></div></div>
+          <div class="analysis-grid"><div><h3>Voice · modeled HNR</h3><canvas id="packet-hnr" height="160" aria-label="Modeled harmonic to remainder energy ratio"></canvas><p class="muted">A model ratio in voiced frames; the components need not be orthogonal.</p></div><div><h3>Harmonic detail · band aperiodicity</h3><canvas id="packet-aperiodicity" height="160" aria-label="Bandwise excitation remainder fraction"></canvas><p class="muted">Brighter means more remainder power. Six bands from 0 to 8 kHz. Silence has no measured ratio.</p></div></div>
+      </div>
+      <div class="analysis-grid"><div class="signal-panel"><div class="panel-heading"><h3>Spectral detail</h3><select id="spectral-view" aria-label="Spectral representation"><option value="stft">STFT · linear frequency</option><option value="cqt">CQT · logarithmic frequency</option><option value="mfcc">MFCC · spectral envelope</option></select></div><canvas id="spectrum" height="220" aria-label="Spectral feature heatmap"></canvas><p class="muted">Enhanced branch · brighter colors indicate stronger relative values.</p></div><div class="signal-panel"><h3>Intensity & landmarks</h3><canvas id="intensity" height="160" aria-label="Minimal-branch relative intensity and landmark markers"></canvas><p id="timing-note" class="muted"></p><div id="landmarks" class="event-list"></div></div></div>
+      <div class="signal-panel"><div class="panel-heading"><h3>Pulse quality & source analysis</h3><span class="muted">Minimal branch · stable phonation candidates</span></div><div id="quality"></div><canvas id="source-flow" height="160" aria-label="Qualified IAIF glottal flow and derivative waveform"></canvas><p id="source-note" class="muted"></p></div>
+      <details class="limitations"><summary>Parameters, coverage & reference metrics</summary><pre id="feature-record"></pre></details>
+    </details>
+    <div class="segments-panel"><div class="panel-heading"><div><div class="section-label">03 / EXPORT</div><h3>Speech intervals</h3></div><div class="downloads"><a id="download-packet" hidden download>Six-stream packet ↓</a><a id="download-json" hidden download>Analysis JSON ↓</a><a id="download-segments" hidden download>Segment WAVs ↓</a></div></div><div id="segments" class="segment-list"><p class="muted">Detected intervals appear here. Click an interval to listen.</p></div><div id="changes"></div></div>
+    <details class="limitations"><summary>Interpretation & recording notes</summary><div id="warnings"><p>Activity labels describe acoustic structure. Coughs, breathing, tonal noise and music can resemble speech. A single microphone cannot reliably separate overlapping speakers with this method.</p></div><p id="reference-note"></p><p id="transcript"></p></details>
+  </section>
+</main>
+<dialog id="dataset-dialog" aria-labelledby="dataset-dialog-title">
+  <div class="panel-heading"><h2 id="dataset-dialog-title">Add a local dataset</h2><button type="button" id="close-dataset" aria-label="Close dataset import">×</button></div>
+  <p class="muted">Recordings stay in their current folder. This app remembers the dataset and reads audio locally.</p>
+  <form id="dataset-form">
+    <label for="dataset-kind">Source</label><select id="dataset-kind"><option value="folder">Folder of audio files</option><option value="csv">CSV file</option></select>
+    <label for="dataset-path" id="dataset-path-label">Folder path</label><div class="path-picker"><input id="dataset-path" type="text" placeholder="/Users/you/Recordings" required autofocus><button type="button" id="browse-dataset" hidden>Browse…</button></div>
+    <label id="recursive-option" class="checkbox"><input id="dataset-recursive" type="checkbox" checked> Include subfolders (recursive scan)</label>
+    <p id="csv-hint" class="muted" hidden>Use a UTF-8 CSV with a <code>path</code> column. Paths can be absolute or relative to the CSV's folder. Other columns are allowed.</p>
+    <label for="dataset-name">Dataset name (optional)</label><input id="dataset-name" type="text" maxlength="120" placeholder="My recordings">
+    <p id="dataset-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button type="button" id="cancel-dataset">Cancel</button><button type="submit" id="import-dataset" class="primary">Add dataset</button></div>
+  </form>
+</dialog>
+<footer>Voice measurements · six aligned streams · source–filter reconstruction · local audio</footer>
+</body>
+</html>
