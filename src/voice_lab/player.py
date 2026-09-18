@@ -88,7 +88,7 @@ class Catalog:
                         if name in self.registrations else {})}
                     for name, items in self.sources.items()]
 
-    def sample(self, dataset, seed, seconds, offset=None):
+    def sample(self, dataset, seed, seconds, offset=None, source_index=None):
         with self.lock:
             if dataset not in self.sources:
                 raise ValueError("Unknown dataset")
@@ -96,6 +96,8 @@ class Catalog:
             label = self.registrations.get(dataset, {}).get("name", dataset)
         if not sources:
             raise ValueError(f"Dataset unavailable: {label}. Check its source folder or CSV.")
+        if source_index is not None and (type(source_index) is not int or not 0 <= source_index < len(sources)):
+            raise ValueError("Source index must identify a recording in the sampling pool")
         rng = random.Random(seed)
         if dataset == "synthetic":
             audio, reference = synthetic(seed)
@@ -112,8 +114,8 @@ class Catalog:
                                  "reference": reference}
         last_error = None
         # A corrupt/non-audio entry should not break the entire dataset sampler.
-        for attempt in range(min(12, len(sources))):
-            source = rng.choice(sources)
+        for attempt in range(1 if source_index is not None else min(12, len(sources))):
+            source = sources[source_index] if source_index is not None else rng.choice(sources)
             try:
                 reader = sf.SoundFile(source)
                 name = source.name
@@ -251,6 +253,49 @@ def quality_exclusion(source,condition):
     return None
 
 
+def request_config(request):
+    seed = int(request.get("seed", 42))
+    seconds = float(request.get("seconds", 20))
+    offset = request.get("offset")
+    if not math.isfinite(seconds) or not 1 <= seconds <= 45:
+        raise ValueError("Excerpt must be between 1 and 45 seconds")
+    if offset is not None:
+        offset = float(offset)
+        if not math.isfinite(offset) or offset < 0:
+            raise ValueError("Offset must be a finite nonnegative number")
+    f0_min, f0_max = float(request.get("f0_min", 60)), float(request.get("f0_max", 500))
+    cfg = replace(Config(), sensitivity=float(request.get("sensitivity", .5)),
+                  denoise=bool(request.get("denoise", False)), f0_min=f0_min, f0_max=f0_max,
+                  pitch_window_ms=max(50, 3000 / f0_min) if f0_min > 0 else 50)
+    cfg.validate()
+    if request.get("method", "recommended") != "recommended":
+        raise ValueError("The previous segmenter and method comparison were removed; use the recommended pipeline")
+    if request.get("stress", "clean") not in {"clean", "noise20", "noise10", "noise0", "reverb", "hum"}:
+        raise ValueError("Unknown listening condition")
+    mc = replace(MeasurementConfig(), channel=request.get("channel", "broadband"),
+                 formant_ceiling=float(request.get("formant_ceiling", 5500)),
+                 noise_method=request.get("noise_method", "wiener"))
+    mc.validate()
+    return seed, seconds, offset, cfg, mc
+
+
+def analyze_sample(catalog, request):
+    seed, seconds, offset, cfg, mc = request_config(request)
+    index = request.get("source_index")
+    audio, sr, provenance = catalog.sample(request["dataset"], seed, seconds, offset, index)
+    if index is not None:
+        provenance["source_index"] = index
+    if audio.ndim == 2:
+        selected = int(np.argmax(np.mean(audio**2, axis=0)))
+        provenance.update(input_channels=audio.shape[1], selected_channel=selected)
+        audio = audio[:, selected]
+    audio, condition = stress(audio, sr, request.get("stress", "clean"), seed)
+    data, waves, packet = analyze_recommended(audio, sr, cfg, mc,
+        quality_exclusion=quality_exclusion(provenance, condition), return_packet=True)
+    packet["metadata"].update(source=provenance, stress=condition)
+    return data, waves, packet, provenance, condition
+
+
 class PlayerServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -258,7 +303,110 @@ class PlayerServer(ThreadingHTTPServer):
         self.catalog, self.output = catalog, output
         self.picker = picker
         self.slots = threading.BoundedSemaphore(2)
+        self.searches = {}
+        self.search_lock = threading.RLock()
         super().__init__(address, Handler)
+
+    def start_error_search(self, request):
+        seed, *_ = request_config(request)
+        mode = request.get("mode", "parametric")
+        if mode not in MODES:
+            raise ValueError("Choose a six-stream reconstruction output")
+        with self.catalog.lock:
+            dataset = request["dataset"]
+            if dataset not in self.catalog.sources:
+                raise ValueError("Unknown dataset")
+            pool = len(self.catalog.sources[dataset])
+            discovered = self.catalog.counts[dataset]
+        if not pool:
+            raise ValueError("Dataset unavailable; check its source folder or CSV")
+        count = request.get("count", 25)
+        if count != "all" and (type(count) is not int or not 1 <= count <= 5000):
+            raise ValueError("Test 1–5000 recordings or all indexed recordings")
+        total = pool if count == "all" else min(count, pool)
+        indices = random.Random(seed).sample(range(pool), total)
+        if not self.slots.acquire(blocking=False):
+            return None
+        identity = uuid.uuid4().hex
+        job = {"id": identity, "state": "running", "mode": mode, "dataset": dataset,
+               "total": total, "processed": 0, "successful": 0, "failed": 0,
+               "pool_count": pool, "discovered_count": discovered, "best_rmse": None,
+               "best_source": None, "result": None}
+        cancel = threading.Event()
+        with self.search_lock:
+            # Keep recent results available without accumulating unlimited JSON.
+            finished = [key for key, (old, _) in self.searches.items() if old["state"] != "running"]
+            for key in finished[:-7]:
+                del self.searches[key]
+            self.searches[identity] = job, cancel
+        try:
+            threading.Thread(target=self._run_error_search, args=(job, cancel, dict(request), indices),
+                             daemon=True).start()
+        except Exception:
+            self.slots.release()
+            with self.search_lock:
+                del self.searches[identity]
+            raise
+        return self.error_search_status(identity)
+
+    def error_search_status(self, identity, cancel=False):
+        with self.search_lock:
+            entry = self.searches.get(identity)
+            if entry is None:
+                return None
+            job, event = entry
+            if cancel and job["state"] == "running":
+                event.set()
+            return dict(job)
+
+    def _run_error_search(self, job, cancel, request, indices):
+        best, best_request = None, None
+        try:
+            for position, index in enumerate(indices):
+                if cancel.is_set():
+                    break
+                candidate = {**request, "seed": int(request.get("seed", 42)) + position,
+                             "source_index": index}
+                try:
+                    result = analyze_sample(self.catalog, candidate)
+                    data, _, _, source, _ = result
+                    score = float(data["representation"]["modes"][job["mode"]]["rmse_to_minimal"])
+                    if not math.isfinite(score) or score < 0:
+                        raise ValueError("Invalid reconstruction RMS error")
+                    with self.search_lock:
+                        job["successful"] += 1
+                        if job["best_rmse"] is None or score > job["best_rmse"]:
+                            best, best_request = result, candidate
+                            job.update(best_rmse=score, best_source={key: source.get(key)
+                                       for key in ("recording", "offset", "seed", "source_index")})
+                except (ValueError, OSError, RuntimeError) as exc:
+                    with self.search_lock:
+                        job["failed"] += 1
+                        job["last_error"] = str(exc)[:500]
+                finally:
+                    with self.search_lock:
+                        job["processed"] = position + 1
+            published = None
+            if best is not None:
+                data, waves, packet, source, condition = best
+                summary = {key: job[key] for key in ("mode", "total", "processed", "successful", "failed",
+                           "pool_count", "discovered_count", "best_rmse")}
+                summary.update(cancelled=cancel.is_set(), winner_request=best_request,
+                    scope="one seeded excerpt per tested indexed recording; highest among successful tested excerpts")
+                data["error_search"] = summary
+                packet["metadata"]["error_search"] = summary
+                published = publish_result(self.output, data, waves, source, condition, packet)
+            with self.search_lock:
+                job.update(state="cancelled" if cancel.is_set() else "completed" if published else "failed",
+                           result=published)
+                if published is None and not cancel.is_set():
+                    job["error"] = "No candidate could be analyzed; check the dataset or settings"
+        except Exception as exc:
+            print(f"Error search failed: {exc}", flush=True)
+            with self.search_lock:
+                job.update(state="failed", error="Search failed; see the local server log")
+        finally:
+            self.slots.release()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -291,7 +439,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._same_host():
             return
-        if self.path not in {"/api/sample", "/api/datasets", "/api/dataset-picker"}:
+        search_cancel = self.path.startswith("/api/error-search/") and self.path.endswith("/cancel")
+        if self.path not in {"/api/sample", "/api/datasets", "/api/dataset-picker", "/api/error-search"} and not search_cancel:
             self.send_error(404)
             return
         acquired = False
@@ -302,6 +451,15 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(self.rfile.read(length))
             if not isinstance(request, dict):
                 raise ValueError("Send a JSON object")
+            if search_cancel:
+                job = self.server.error_search_status(self.path.split("/")[3], cancel=True)
+                self._json(job if job else {"error": "Search not found"}, 200 if job else 404)
+                return
+            if self.path == "/api/error-search":
+                job = self.server.start_error_search(request)
+                self._json(job if job else {"error": "Two analyses are already running; try again shortly"},
+                           202 if job else 429)
+                return
             if self.path == "/api/dataset-picker":
                 if self.server.picker is None:
                     self._json({"error": "Native Browse is available in the Mac app; paste a local path here"}, 400)
@@ -316,40 +474,12 @@ class Handler(BaseHTTPRequestHandler):
                                                   request.get("name", ""), request.get("recursive", True))
                 self._json({"dataset": dataset, "datasets": self.server.catalog.public()}, 201)
                 return
-            seed = int(request.get("seed", 42))
-            seconds = float(request.get("seconds", 20))
-            offset = request.get("offset")
-            if not math.isfinite(seconds) or not 1 <= seconds <= 45:
-                raise ValueError("Excerpt must be between 1 and 45 seconds")
-            if offset is not None:
-                offset = float(offset)
-                if not math.isfinite(offset) or offset < 0:
-                    raise ValueError("Offset must be a finite nonnegative number")
-            sensitivity = float(request.get("sensitivity", 0.5))
-            f0_min, f0_max = float(request.get("f0_min", 60)), float(request.get("f0_max", 500))
-            cfg = replace(Config(), sensitivity=sensitivity, denoise=bool(request.get("denoise", False)),
-                          f0_min=f0_min, f0_max=f0_max, pitch_window_ms=max(50, 3000 / f0_min) if f0_min > 0 else 50)
-            cfg.validate()
-            if request.get("method", "recommended") != "recommended":
-                raise ValueError("The previous segmenter and method comparison were removed; use the recommended pipeline")
-            mc=replace(MeasurementConfig(),channel=request.get("channel","broadband"),
-                       formant_ceiling=float(request.get("formant_ceiling",5500)),
-                       noise_method=request.get("noise_method","wiener"))
-            mc.validate()
+            request_config(request)
             acquired = self.server.slots.acquire(blocking=False)
             if not acquired:
                 self._json({"error": "Two analyses are already running; try again shortly"}, 429)
                 return
-            audio, sr, provenance = self.server.catalog.sample(request["dataset"], seed, seconds, offset)
-            if audio.ndim==2:
-                selected=int(np.argmax(np.mean(audio**2,axis=0)))
-                provenance.update(input_channels=audio.shape[1],selected_channel=selected)
-                audio=audio[:,selected]
-            audio, condition = stress(audio, sr, request.get("stress", "clean"), seed)
-            exclusion=quality_exclusion(provenance,condition)
-            data,waves,packet=analyze_recommended(audio,sr,cfg,mc,quality_exclusion=exclusion,return_packet=True)
-            packet["metadata"]["source"]=provenance
-            packet["metadata"]["stress"]=condition
+            data, waves, packet, provenance, condition = analyze_sample(self.server.catalog, request)
             data=publish_result(self.server.output,data,waves,provenance,condition,packet)
             self._json(data)
         except (ValueError, KeyError, TypeError, OverflowError) as exc:
@@ -370,6 +500,10 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path == "/api/datasets":
             self._json({"datasets": self.server.catalog.public(), "native_picker": self.server.picker is not None})
+            return
+        if path.startswith("/api/error-search/"):
+            job = self.server.error_search_status(path.removeprefix("/api/error-search/"))
+            self._json(job if job else {"error": "Search not found"}, 200 if job else 404)
             return
         public = {"/": (WEB / "index.html", "text/html"),
                   "/app.js": (WEB / "app.js", "text/javascript"),

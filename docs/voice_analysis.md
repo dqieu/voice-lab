@@ -95,6 +95,31 @@ gain; each segment WAV contains original waveform values at the detected interva
 The original, enhanced, minimal and qualified glottal tracks remain separately
 available in its local artifact directory.
 
+## Find the highest reconstruction error
+
+Below the playback output table, expand **Find sample with highest RMS error to
+Minimal**. Choose a six-stream reconstruction output and test 10, 25, 50, 100,
+or all indexed recordings in the selected dataset. Selecting a reconstruction
+playback row also selects its search metric; otherwise Parametric is the default.
+
+The search tests unique indexed recordings without replacement, with one seeded
+excerpt per recording under the current excerpt length, listening condition,
+noise reduction and analysis settings. It ranks the same unnormalized waveform
+RMS error against Minimal displayed in the table. Loudness affects this metric;
+it is not perceptual quality or normalized reconstruction error. Full packet
+differences normally reflect numerical roundoff.
+
+Progress reports tested/skipped counts and the best score. **Stop & show best so
+far** finishes the current excerpt, then loads the best successful result.
+Only the winning sample's audio, JSON and packet are saved. Its JSON/packet
+metadata records search scope, counts, settings and an exact replay request.
+Reanalyzing the winner with the displayed seed retains its recording index;
+shuffle or choosing another dataset restores ordinary random selection.
+
+Highest means highest among successfully tested excerpts in the current pool,
+not every recording/time window in the corpus. Folder/CSV imports use their indexed pools. Changing files or reindexing a catalog can change index
+based replay. Searches and exports remain local.
+
 ## Six-stream representation and standalone synthesis
 
 The pipeline exports `representation.npz`, a versioned, self-contained

@@ -6,6 +6,7 @@ if (window.location.protocol === "file:") {
 const $ = id => document.getElementById(id);
 const audio = $("audio");
 let analysis = null, datasets = [], track = "original", segmentEnd = null, busy = false;
+let searchId = null, pinnedSample = null;
 const colors = {voiced: "#43d8ce", unvoiced: "#729ffc", nonspeech: "#586879"};
 const notes = {
   original: "Original recording, resampled to 16 kHz mono. Stress conditions are applied before analysis.",
@@ -174,6 +175,7 @@ function renderFeatures(data){
 function setTrack(name){
   if(!analysis?.audio[name] || (name==="glottal"&&!hasSource(analysis)) || name===track)return;
   track=name;segmentEnd=null;
+  if(!busy&&name.startsWith("packet_"))$("error-search-mode").value=name.replace(/^packet_/,"");
   markTrack();
   $("track-note").textContent=trackNote(name);
   const position=audio.currentTime, playing=!audio.paused;
@@ -213,7 +215,7 @@ function render(data){
   $("transcript").textContent=data.source.transcript?`Transcript: ${data.source.transcript}`:"";
   renderFeatures(data);drawAll();
 }
-function describe(){const d=datasets.find(d=>d.id===$("dataset").value);$("dataset-description").textContent=d?d.import?.unavailable?`Unavailable: ${d.import.unavailable}`:`${d.description} · ${d.count.toLocaleString()} recordings (${d.indexed.toLocaleString()} in sampling pool)`:"";}
+function describe(){const d=datasets.find(d=>d.id===$("dataset").value);$("dataset-description").textContent=d?d.import?.unavailable?`Unavailable: ${d.import.unavailable}`:`${d.description} · ${d.count.toLocaleString()} recordings (${d.indexed.toLocaleString()} in sampling pool)`:"";updateSearchScope();}
 function updateDatasets(items,selected){
   datasets=items;$("dataset").replaceChildren();
   for(const d of datasets){const option=document.createElement("option");option.value=d.id;option.textContent=(d.id==="synthetic"?"Synthetic · known intervals":d.name||d.id)+(d.available===false?" · unavailable":"");option.disabled=d.available===false;$("dataset").append(option);}
@@ -244,20 +246,74 @@ $("dataset-form").onsubmit=async event=>{
     $("dataset-dialog").close();await sample();
   }catch(error){importError(error);}finally{$("import-dataset").disabled=false;$("import-dataset").textContent="Add dataset";}
 };
+function updateSearchScope(){
+  const d=datasets.find(d=>d.id===$("dataset").value);
+  $("error-search-scope").textContent=`${d?`${d.name||d.id}: ${d.indexed.toLocaleString()} indexed of ${d.count.toLocaleString()} discovered recordings. `:""}One excerpt per tested recording, using current settings. Highest among tested excerpts, not every time window. Full packet errors are normally numerical roundoff.`;
+}
+function sampleRequest(overrides={}){
+  const noiseReduction=$("noise-reduction").value;
+  const request={dataset:$("dataset").value,seed:Number($("seed").value),seconds:Number($("seconds").value),stress:$("stress").value,sensitivity:Number($("sensitivity").value),f0_min:Number($("f0-min").value),f0_max:Number($("f0-max").value),denoise:noiseReduction!=="off",channel:$("channel").value,formant_ceiling:Number($("formant-ceiling").value),noise_method:noiseReduction==="off"?"wiener":noiseReduction,...overrides};
+  if(pinnedSample&&request.dataset===pinnedSample.dataset&&request.seed===pinnedSample.seed)request.source_index=pinnedSample.source_index;
+  return request;
+}
+function setBusy(value){
+  busy=value;
+  for(const id of["sample","shuffle","add-dataset","dataset","seconds","seed","stress","noise-reduction","sensitivity","f0-min","f0-max","channel","formant-ceiling","error-search-mode","error-search-count","error-search-start"])$(id).disabled=value;
+}
 async function sample(overrides={}){
   if(busy)return {error:"An analysis is already running"};
-  busy=true;audio.pause();$("sample").disabled=true;$("shuffle").disabled=true;$("add-dataset").disabled=true;$("status").textContent="Analyzing…";$("error").hidden=true;
+  setBusy(true);audio.pause();$("status").textContent="Analyzing…";$("error").hidden=true;$("error-search-result").hidden=true;$("error-search-progress").hidden=true;
   try{
-    const noiseReduction=$("noise-reduction").value;
-    const response=await fetch("/api/sample",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({dataset:$("dataset").value,seed:Number($("seed").value),seconds:Number($("seconds").value),stress:$("stress").value,sensitivity:Number($("sensitivity").value),f0_min:Number($("f0-min").value),f0_max:Number($("f0-max").value),denoise:noiseReduction!=="off",channel:$("channel").value,formant_ceiling:Number($("formant-ceiling").value),noise_method:noiseReduction==="off"?"wiener":noiseReduction,...overrides})});
+    const response=await fetch("/api/sample",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(sampleRequest(overrides))});
     const data=await response.json();if(!response.ok)throw new Error(data.error||"Analysis failed");
     render(data);$("status").textContent="Analysis ready";return {artifact:data.artifact,segments:data.segments,stats:data.stats};
   }catch(error){$("error").textContent=error.message;$("error").hidden=false;$("status").textContent="Could not analyze";return {error:error.message};}
-  finally{busy=false;$("sample").disabled=false;$("shuffle").disabled=false;$("add-dataset").disabled=false;}
+  finally{setBusy(false);}
 }
+async function findHighestError(){
+  if(busy||!$("sample-form").reportValidity())return;
+  const count=$("error-search-count").value;
+  const request={...sampleRequest(),mode:$("error-search-mode").value,count:count==="all"?"all":Number(count)};
+  delete request.source_index;
+  setBusy(true);audio.pause();$("error").hidden=true;$("status").textContent="Searching…";
+  $("error-search-result").hidden=false;$("error-search-result").textContent="Starting local search…";
+  $("error-search-progress").hidden=false;$("error-search-progress").value=0;
+  try{
+    const response=await fetch("/api/error-search",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(request)});
+    let job=await response.json();if(!response.ok)throw new Error(job.error||"Could not start search");
+    searchId=job.id;$("error-search-cancel").hidden=false;$("error-search-cancel").disabled=false;
+    for(;;){
+      $("error-search-progress").max=job.total;$("error-search-progress").value=job.processed;
+      $("error-search-result").textContent=`${packetLabels[job.mode]} · ${job.processed}/${job.total} tested · ${job.failed} skipped${job.best_rmse!=null?` · highest RMS error ${job.best_rmse.toExponential(3)}`:""}`;
+      if(job.state!=="running")break;
+      await new Promise(resolve=>setTimeout(resolve,700));
+      const response=await fetch(`/api/error-search/${searchId}`);job=await response.json();
+      if(!response.ok)throw new Error(job.error||"Could not read search progress");
+    }
+    if(job.result){
+      const winner=job.result.error_search.winner_request;
+      pinnedSample={dataset:winner.dataset,seed:winner.seed,source_index:winner.source_index};
+      $("seed").value=winner.seed;track=`packet_${job.mode}`;render(job.result);
+      $("error-search-result").textContent=`${job.state==="cancelled"?"Stopped · best so far":"Highest among tested excerpts"}: ${packetLabels[job.mode]} · RMS error ${job.best_rmse.toExponential(3)} · ${job.successful} successful, ${job.failed} skipped, ${job.processed}/${job.total} tested. ${job.best_source.recording} · source offset ${time(job.best_source.offset)}. Only the winning sample was exported.`;
+      $("status").textContent="Analysis ready";
+    }else if(job.state==="cancelled"){
+      $("error-search-result").textContent="Stopped before any sample could be analyzed.";$("status").textContent=analysis?"Analysis ready":"Ready";
+    }else throw new Error(job.error||"No candidate could be analyzed");
+  }catch(error){
+    if(searchId)fetch(`/api/error-search/${searchId}/cancel`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"}).catch(()=>{});
+    $("error").textContent=error.message;$("error").hidden=false;$("status").textContent="Search failed";
+  }finally{searchId=null;setBusy(false);$("error-search-cancel").hidden=true;}
+}
+$("error-search-start").onclick=findHighestError;
+$("error-search-cancel").onclick=async()=>{
+  if(!searchId)return;$("error-search-cancel").disabled=true;
+  try{const response=await fetch(`/api/error-search/${searchId}/cancel`,{method:"POST",headers:{"Content-Type":"application/json"},body:"{}"});if(!response.ok)throw new Error("Could not stop search");$("error-search-result").textContent="Stopping after the current excerpt; loading best so far…";}
+  catch(error){$("error").textContent=error.message;$("error").hidden=false;$("error-search-cancel").disabled=false;}
+};
+window.addEventListener("pagehide",()=>{if(searchId)navigator.sendBeacon(`/api/error-search/${searchId}/cancel`,"{}");});
 $("sample-form").addEventListener("submit",event=>{event.preventDefault();sample();});
-$("shuffle").onclick=()=>{const array=new Uint32Array(1);crypto.getRandomValues(array);$("seed").value=array[0];if($("sample-form").reportValidity())sample();};
-$("dataset").onchange=describe;
+$("shuffle").onclick=()=>{pinnedSample=null;const array=new Uint32Array(1);crypto.getRandomValues(array);$("seed").value=array[0];if($("sample-form").reportValidity())sample();};
+$("dataset").onchange=()=>{pinnedSample=null;describe();};
 $("sensitivity").oninput=()=>{$("sensitivity-value").value=`${Math.round(Number($("sensitivity").value)*100)}%`;};
 $("outputs").onclick=event=>{const row=event.target.closest("tbody tr"),button=row?.querySelector("[data-track]");if(button)setTrack(button.dataset.track);};
 $("spectral-view").onchange=drawSpectrum;$("pitch-candidates").onchange=drawAll;

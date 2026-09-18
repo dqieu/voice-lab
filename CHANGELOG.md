@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased - 2026-09-19
+
+- Added search for the tested sample with highest reconstruction RMS error
+  against Minimal, with output selection, progress, cancellation, and exact replay.
+- Export only the winning excerpt and record scope/settings/counts in its metadata.
+
 ## 0.1.0 - 2026-09-18
 
 - Extracted the local voice toolkit into the standalone `voice_lab` package.

@@ -111,6 +111,13 @@ measurement-appropriate bandwidth limits and optional conservative Wiener or
 spectral subtraction. It feeds pitch/formant estimators. Advanced settings and
 plots are collapsed initially.
 
+Expand **Find sample with highest RMS error to Minimal** below the output table
+to test 10, 25, 50, 100, or all indexed recordings. Choose the reconstruction
+output to rank. The search shows progress, loads the highest-error tested excerpt,
+and can stop with best-so-far. Only the winner is exported. It uses one excerpt
+per recording and current settings, so its maximum is bounded to tested excerpts.
+Full-packet errors are normally numerical roundoff. [Search details](docs/voice_analysis.md#find-the-highest-reconstruction-error).
+
 The six streams are **F0** (pitch), **VOICE** (voicing/periodicity), **TRACT**
 (LSF filter envelope), **AMP** (gain), **HARM** (modeled harmonics), and **RESID**
 (the complementary excitation remainder). Full-packet decoding retains all

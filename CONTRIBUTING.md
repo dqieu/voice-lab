@@ -14,7 +14,7 @@ python -m build
 
 Or install with `uv sync --locked --extra dev --extra mac`, then use `uv run` for
 the commands. The `mac` extra is only needed for the native Mac window.
-Tests use generated audio and temporary directories, including three loopback
+Tests use generated audio and temporary directories, including loopback
 HTTP cases. An environment that blocks local socket binding cannot run those
 cases; use a normal local terminal. Tests do not require private datasets or
 network access after dependency installation.

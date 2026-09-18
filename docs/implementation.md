@@ -113,3 +113,26 @@ are not new claims of reference-algorithm equivalence.
   `copying` was previously mistaken for a license file, introducing a debug
   object without a macOS version command into the bundle. Acoustic processing
   is unchanged; verify the repaired frozen bundle's signature and self-test.
+
+## 2026-09-19 - Reconstruction-error sample search
+
+- **Owner: user. Interface extension:** add an option to find the sample with
+  highest RMS error against Minimal in the selected dataset.
+- **Owner: Codex. Search-scope choice:** test unique indexed recordings without
+  replacement, using one seeded excerpt under current settings per recording.
+  Choose a six-stream output and bounded counts or all indexed recordings.
+  Rank the same unnormalized waveform RMS error as the playback table. This is
+  the maximum among successful tested excerpts, not a full time-window sweep,
+  perceptual score, or independent measurement-accuracy claim. Full-packet
+  differences generally reflect numerical roundoff.
+- **Owner: Codex. Runtime/persistence only:** use the existing analysis slots,
+  asynchronous progress, corrupt-candidate skips, and cancellation after the
+  current excerpt. Export only the winning sample; record scope/counts/settings
+  and an indexed replay request in JSON/packet metadata. Changing files or
+  reindexing can change indexed replay. Acoustic algorithms and decoder modes
+  are unchanged, and source paths/recordings stay local.
+- **Validation (Codex):** 38 focused analysis/dataset/representation/search tests
+  passed, and the standalone namespace's four new search checks passed. Browser
+  checks verified completion, exact decoded-sample replay, output matching, and
+  cancellation with best-so-far; private source/audio artifacts are excluded
+  from this repository.

@@ -47,6 +47,17 @@
     <section id="output-panel" class="signal-panel" hidden aria-labelledby="output-heading">
       <div class="panel-heading"><h3 id="output-heading">Playback output</h3><span class="muted">Choose a row, then press Play</span></div>
       <div class="table-scroll"><table id="outputs"><caption class="sr-only">Available playback outputs. Reconstruction errors are measured against the minimal branch.</caption><thead><tr><th scope="col">Output</th><th scope="col">RMS error to minimal</th><th scope="col">Peak level</th></tr></thead><tbody></tbody></table></div>
+      <details id="error-search-panel"><summary>Find sample with highest RMS error to Minimal</summary>
+        <div class="error-search-controls">
+          <div><label for="error-search-mode">Reconstruction output</label><select id="error-search-mode"><option value="parametric">Parametric · no stored residual</option><option value="harmonic_only">Harmonics only</option><option value="residual_only">Residual only</option><option value="flat_tract">Flat tract</option><option value="constant_gain">Constant gain</option><option value="full">Full packet</option></select></div>
+          <div><label for="error-search-count">Recordings to test</label><select id="error-search-count"><option value="10">10</option><option value="25" selected>25</option><option value="50">50</option><option value="100">100</option><option value="all">All indexed recordings</option></select></div>
+          <button type="button" id="error-search-start" class="secondary">Find highest error</button>
+          <button type="button" id="error-search-cancel" class="secondary" hidden>Stop &amp; show best so far</button>
+        </div>
+        <p id="error-search-scope" class="muted">One excerpt per tested recording, using the selected dataset and current settings. Highest among tested excerpts, not every time window. Full packet errors are normally numerical roundoff.</p>
+        <progress id="error-search-progress" max="1" value="0" hidden aria-label="Reconstruction error search progress"></progress>
+        <p id="error-search-result" class="muted" role="status" aria-live="polite" hidden></p>
+      </details>
     </section>
     <details id="full-features" hidden><summary>Advanced analysis · measurements, streams & source diagnostics</summary>
       <div class="analysis-grid">
